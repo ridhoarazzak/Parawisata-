@@ -76,10 +76,12 @@ export function Explorer({ places, generated }: { places: Place[]; generated: st
 
           {p ? (
             <div className="detail">
+              {p.ph?.length ? <div className="gal">{p.ph.map((f) => <img key={f.f} src={f.f} alt={p.n} loading="lazy" />)}</div> : null}
               <h2>{p.n}</h2>
               <div className="m">{p.r ? <><span className="star">★ {p.r}</span> · </> : null}{p.s}{p.z ? ` · ${level(p.z)} (skor ${p.z})` : ""}</div>
               <p>{p.d ?? "Info lengkap belum tersedia di data. Buka Google Maps untuk foto dan ulasan terbaru."}</p>
               {p.h && <p className="m">Jam: {p.h}</p>}
+              {p.ph?.length ? <p className="m" style={{ fontSize: ".72rem" }}>Foto: {p.ph.map((f, k) => <span key={f.f}>{k ? "; " : ""}<a href={f.l} target="_blank" rel="noopener noreferrer">{f.c}</a></span>)} (Wikimedia Commons)</p> : null}
               <a className="btn" href={mapsUrl(p)} target="_blank" rel="noopener noreferrer">Buka di Google Maps</a>
               <button className="btn o" onClick={() => toggleFav(p.id)}>{favs.includes(p.id) ? "♥ Tersimpan" : "♡ Simpan"}</button>
               <button className="btn o" onClick={() => setSel(null)}>Kembali</button>
@@ -95,7 +97,7 @@ export function Explorer({ places, generated }: { places: Place[]; generated: st
               <div className="items">
                 {list.slice(0, lim).map((x) => (
                   <button key={x.id} className="it" onClick={() => { setSel(x.id); window.scrollTo({ top: 0, behavior: "smooth" }); }}>
-                    <div className="disc"><Ico c={x.c} /></div><b>{x.n}</b><span><Score p={x} /></span>
+                    <div className="disc">{x.ph?.[0] ? <img src={x.ph[0].f} alt={x.n} loading="lazy" /> : <Ico c={x.c} />}</div><b>{x.n}</b><span><Score p={x} /></span>
                   </button>
                 ))}
               </div>
@@ -106,7 +108,4 @@ export function Explorer({ places, generated }: { places: Place[]; generated: st
       </main>
 
       <footer>Keramaian zona = seberapa ramai kawasan itu dikunjungi penduduk dan orang yang lalu lalang (skor lebih tinggi = lebih ramai). Sumber: data aset wisata, penginapan, kuliner, dan fasilitas kesehatan (koordinat dari Google Maps), diperbarui {generated}. Rating dan jam buka dapat berubah; cek tautan Maps sebelum berangkat.</footer>
-      <div className="dock"><div className="logo" style={{ fontSize: "1.3rem" }}><svg width="24" height="24" viewBox="0 0 64 64"><use href="#i-budaya" /></svg>Solsel</div><em>Teh, rumah gadang, dan udara sejuk.</em><small>Sumatera Barat</small></div>
-    </>
-  );
-}
+      <div className="dock"><div className="logo" style={{ fontSize: "1.3rem" }}><svg width="24" height="24" viewBox="0 0 64 64"><use href="#i-budaya" /></svg>Solsel</div><em>Teh, rumah gadang,
