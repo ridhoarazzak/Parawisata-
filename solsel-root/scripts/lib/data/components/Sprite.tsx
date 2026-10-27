@@ -27,4 +27,4 @@ export function Illustration() {
    <g fill="#D9A441"><circle cx="150" cy="60" r="3"/><circle cx="260" cy="40" r="2.5"/><circle cx="310" cy="90" r="2"/></g>
   </svg>
   );
-}
+      }
