@@ -1,79 +1,53 @@
-// Usage: node scripts/build-data.mjs
-// Baca data/raw/*.csv + data/overrides.json -> data/places.json, dengan pemeriksaan agar tidak salah.
+// Ambil foto dari Wikimedia Commons (gratis, tanpa API key) -> public/images + data/photos.json
+// Foto dicari berdasarkan koordinat tempat (radius 500 m), lalu hanya dipakai jika judul filenya
+// memuat kata khas dari nama tempat, supaya tidak salah tempat. Pembuat dan lisensi disimpan untuk atribusi.
+// Jalan lewat GitHub Actions (workflow "Ambil foto") atau: node scripts/fetch-photos.mjs
 import fs from "node:fs";
-const R = (f) => fs.readFileSync(new URL(`../${f}`, import.meta.url), "utf8");
-const BBOX = { latMin: -1.75, latMax: -1.19, lonMin: 100.8, lonMax: 101.7 }; // kira-kira wilayah Solok Selatan
-const errors = [], warns = [], dropped = [];
+const API = "https://commons.wikimedia.org/w/api.php";
+const UA = "PojokSolsel/1.0 (https://github.com/ridhoarazzak/nextjs-boilerplate)";
+const CATS = (process.env.PHOTO_CATS || "alam,budaya,airpanas,penginapan").split(",").map((s) => s.trim());
+const FORCE = process.env.FORCE === "1";
+const GENERIC = new Set(["air", "terjun", "wisata", "kawasan", "hot", "puncak", "taman", "solok", "selatan", "nagari", "waterboom", "ruang", "terbuka", "hijau", "state", "parks", "wisma", "hotel", "homestay", "losmen", "penginapan", "guest", "house", "pondok", "kontrakan", "pusat", "informasi", "simpang"]);
+const toks = (s) => s.toLowerCase().replace(/^file:/, "").replace(/\.[a-z0-9]+$/, "").split(/[^a-z0-9]+/).filter((w) => w.length > 3 && !GENERIC.has(w));
+const strip = (h) => (h || "").replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/\s+/g, " ").trim();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function csv(text) {
-  const rows = []; let row = [], cur = "", q = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (q) { if (ch === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
-    else if (ch === '"') q = true;
-    else if (ch === ",") { row.push(cur); cur = ""; }
-    else if (ch === "\n" || ch === "\r") { if (ch === "\r" && text[i + 1] === "\n") i++; row.push(cur); cur = ""; if (row.some(Boolean)) rows.push(row); row = []; }
-    else cur += ch;
-  }
-  if (cur || row.length) { row.push(cur); rows.push(row); }
-  const head = rows.shift().map((h) => h.trim());
-  return rows.map((r) => Object.fromEntries(head.map((h, i) => [h, (r[i] ?? "").trim()])));
+async function nearby(p) {
+  const u = new URL(API);
+  Object.entries({ action: "query", format: "json", generator: "geosearch", ggscoord: `${p.la}|${p.lo}`, ggsradius: "500", ggsnamespace: "6", ggslimit: "30",
+    prop: "imageinfo", iiprop: "url|size|mime|extmetadata", iiurlwidth: "800" }).forEach(([k, v]) => u.searchParams.set(k, v));
+  const r = await fetch(u, { headers: { "User-Agent": UA } });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return Object.values((await r.json()).query?.pages ?? {}).sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
 }
-function load(file, need) {
-  const rows = csv(R(`data/raw/${file}`));
-  const miss = need.filter((k) => !(k in (rows[0] ?? {})));
-  if (miss.length) errors.push(`${file}: kolom hilang: ${miss.join(", ")}`);
-  return rows;
-}
-const num = (v) => (v === "" || isNaN(+v) ? null : +v);
-const rate = (v, f) => { const n = num(v); if (n === null || n === 0) return null; if (n < 0 || n > 5) warns.push(`${f}: rating tidak wajar (${v})`); return n; };
-const r5 = (n) => Math.round(n * 1e5) / 1e5;
-const inside = (la, lo) => la >= BBOX.latMin && la <= BBOX.latMax && lo >= BBOX.lonMin && lo <= BBOX.lonMax;
-const ov = JSON.parse(R("data/overrides.json"));
-const places = [], names = new Set();
-function add(file, x) {
-  if (!x.n) { warns.push(`${file}: baris tanpa nama dilewati`); return; }
-  if (ov.drop.includes(x.n)) { dropped.push(`${x.n} (daftar drop)`); return; }
-  const key = x.n.toLowerCase();
-  if (names.has(key)) { dropped.push(`${x.n} (nama ganda)`); return; }
-  if (x.la === null || x.lo === null) { errors.push(`${file}: "${x.n}" koordinat tidak valid`); return; }
-  if (!inside(x.la, x.lo)) { dropped.push(`${x.n} (di luar Solok Selatan)`); return; }
-  names.add(key);
-  places.push({ id: `${key.replace(/[^a-z0-9]+/g, "-")}-${r5(x.la)}`, n: x.n, c: x.c, r: x.r ?? null, z: x.z ?? null, la: r5(x.la), lo: r5(x.lo), s: x.s, d: null, h: null });
-}
-const wcat = (n) => { const s = n.toLowerCase();
-  if (/hot waterboom|air panas/.test(s)) return "airpanas";
-  if (/rumah gadang|menara|jembatan|gapura|monumen|simpang/.test(s)) return "budaya";
-  return "alam"; };
 
-for (const r of load("wisata.csv", ["nama", "lat", "lon", "skor_zona"])) {
-  const z = num(r.skor_zona); if (z === null || z < 0 || z > 10) warns.push(`wisata: skor_zona aneh untuk "${r.nama}" (${r.skor_zona})`);
-  add("wisata", { n: r.nama, c: wcat(r.nama), z, la: num(r.lat), lo: num(r.lon), s: "Wisata" });
+const data = JSON.parse(fs.readFileSync("data/places.json", "utf8"));
+const out = fs.existsSync("data/photos.json") ? JSON.parse(fs.readFileSync("data/photos.json", "utf8")) : {};
+fs.mkdirSync("public/images", { recursive: true });
+let ok = 0, none = 0;
+for (const p of data.places.filter((x) => CATS.includes(x.c) && (FORCE || !(x.id in out)))) {
+  try {
+    const want = toks(p.n);
+    const hits = want.length ? (await nearby(p)).filter((pg) => {
+      const ii = pg.imageinfo?.[0];
+      return ii && ii.mime === "image/jpeg" && ii.width >= 800 && toks(pg.title).some((t) => want.includes(t));
+    }).slice(0, 2) : [];
+    const list = [];
+    for (const [i, pg] of hits.entries()) {
+      const ii = pg.imageinfo[0], m = ii.extmetadata ?? {};
+      const img = await fetch(ii.thumburl, { headers: { "User-Agent": UA } });
+      if (!img.ok) continue;
+      const file = `${p.id}-${i + 1}.jpg`;
+      fs.writeFileSync(`public/images/${file}`, Buffer.from(await img.arrayBuffer()));
+      const lic = strip(m.LicenseShortName?.value);
+      list.push({ f: `/images/${file}`, c: [strip(m.Artist?.value) || "Wikimedia Commons", lic].filter(Boolean).join(" · "), l: ii.descriptionurl });
+      await sleep(300);
+    }
+    out[p.id] = list; list.length ? ok++ : none++;
+    console.log(`${list.length ? "ok" : "-"} ${p.n}: ${list.length} foto`);
+  } catch (e) { console.error(`[!] ${p.n}: ${e.message}`); }
+  fs.writeFileSync("data/photos.json", JSON.stringify(out, null, 1));
+  await sleep(300);
 }
-for (const r of load("penginapan.csv", ["nama", "lat", "lon", "rating"]))
-  add("penginapan", { n: r.nama, c: "penginapan", r: rate(r.rating, "penginapan"), la: num(r.lat), lo: num(r.lon), s: "Penginapan" });
-const SUB = { "Coffee shop": "Kedai kopi", Cafe: "Kafe", Restaurant: "Restoran", "Coffee store": "Toko kopi", "Coffee roastery": "Roastery kopi", "Ice cream shop": "Kedai es krim", "Brunch restaurant": "Restoran" };
-for (const r of load("kuliner.csv", ["nama", "kategori", "lat", "lon", "rating"])) {
-  if (["Barber shop", "Grocery store", "Hotel", "Coffee wholesaler"].includes(r.kategori) || /billiard|mini ?market/i.test(r.nama)) { dropped.push(`${r.nama} (bukan kuliner)`); continue; }
-  add("kuliner", { n: r.nama, c: "kuliner", r: rate(r.rating, "kuliner"), la: num(r.lat), lo: num(r.lon), s: SUB[r.kategori] ?? r.kategori });
-}
-for (const r of load("aktivitas_warga.csv", ["nama", "kategori", "kategori_scrape", "lat", "lon", "rating"])) {
-  if (r.kategori_scrape !== "kesehatan") continue; // sekolah tidak dipakai
-  if (["Consultant", "Unknown"].includes(r.kategori) || (/motor|bengkel/i.test(r.nama) || (/pasar/i.test(r.nama) && !/pustu|puskesmas|klinik|rumah sakit/i.test(r.nama)))) { dropped.push(`${r.nama} (bukan layanan kesehatan)`); continue; }
-  const s = /hospital/i.test(r.kategori) ? "Rumah sakit" : /puskesmas|pustu/i.test(r.nama) ? "Puskesmas" : "Klinik / praktik";
-  add("kesehatan", { n: r.nama, c: "kesehatan", r: rate(r.rating, "kesehatan"), la: num(r.lat), lo: num(r.lon), s });
-}
-for (const e of ov.extras) add("extras", e);
-for (const [name, o] of Object.entries(ov.byName)) {
-  const p = places.find((x) => x.n === name);
-  if (!p) { warns.push(`overrides: "${name}" tidak ditemukan di data (salah ketik?)`); continue; }
-  Object.assign(p, o);
-}
-places.sort((a, b) => (b.z ?? 0) - (a.z ?? 0) || (b.r ?? 0) - (a.r ?? 0) || a.n.localeCompare(b.n));
-const by = {}; places.forEach((p) => (by[p.c] = (by[p.c] ?? 0) + 1));
-console.log("Jumlah per kategori:", by, "\nDibuang:", dropped.length);
-dropped.forEach((d) => console.log("  - " + d));
-warns.forEach((w) => console.warn("PERINGATAN:", w));
-if (errors.length) { errors.forEach((e) => console.error("ERROR:", e)); process.exit(1); }
-fs.writeFileSync(new URL("../data/places.json", import.meta.url), JSON.stringify({ generated: new Date().toISOString().slice(0, 10), places }, null, 0));
-console.log(`OK: ${places.length} tempat -> data/places.json`);
+fs.writeFileSync("data/photos.json", JSON.stringify(out, null, 1));
+console.log(`Selesai. Dengan foto: ${ok}, tanpa foto: ${none}`);
